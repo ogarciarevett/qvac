@@ -226,7 +226,7 @@ worker; hand-write per language only what is irreducibly client-side, and never
   Python once used `lingua`, JS `@qvac/langdetect-text`).
 - **Version lock-step.** This package's version *is* the `@qvac/sdk` version it
   was generated against.
-- **Conformance corpus.** `../sdk/e2e/conformance/cases.json` is run by both a
+- **Conformance corpus.** `../sdk-e2e/catalog/conformance/cases.json` is run by both a
   JS runner and `tests/test_conformance.py`, so the two clients are diffed
   against the same cases.
 
@@ -253,7 +253,7 @@ Format, lint, typecheck, and the generation check (all run in CI):
 .venv/bin/python3 -m mypy -p tetherto.qvac_sdk && .venv/bin/python3 -m mypy scripts tests
 ```
 
-Real-model tests spawn a worker (`packages/sdk` built via `bun run build`, or
+Real-model tests spawn a worker (`packages/sdk` built via `npm run build`, or
 `QVAC_POC_SDK_DIR`) and otherwise skip. `generate.py` runs `black` + `ruff --fix
 --select I` (with the package config) on its own output, so a fresh
 regeneration already passes the checks above.

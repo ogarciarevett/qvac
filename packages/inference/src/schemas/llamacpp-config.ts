@@ -19,6 +19,18 @@ const verbositySchema = z.enum(VERBOSITY)
 
 // Base schema - validates types, all fields optional (for input validation)
 export const llmConfigBaseSchema = z.object({
+  backend: z
+    .array(z.enum(['cuda', 'vulkan', 'metal', 'opencl', 'auto']))
+    .min(1)
+    .optional()
+    .describe(
+      "Ordered GPU backend names, such as ['cuda', 'vulkan']. " +
+        'Accepted names: cuda, vulkan, metal, opencl, and auto for no preference. ' +
+        'If unset, uses the native default order. ' +
+        'If none of the specified names has a corresponding available device, selection falls back to the native default order. ' +
+        "Use device: 'cpu' for CPU. " +
+        "A GPU override cannot be combined with a split-mode other than 'none' or with devices."
+    ),
   ctx_size: z
     .number()
     .optional()
@@ -107,6 +119,45 @@ export const llmConfigBaseSchema = z.object({
     .boolean()
     .optional()
     .describe("Enable tool calling via the model's jinja chat template. Default false."),
+  cache_checkpoints: z
+    .number()
+    .int()
+    .min(0)
+    .max(1024)
+    .optional()
+    .describe(
+      "Prompt-cache checkpoints kept per sequence on hybrid / recurrent models (Qwen3.5, Jamba, DeepSeek V4) and on sliding-window models (Gemma 3/4, gpt-oss) whose context exceeds the window, one per cached request at the end of its history (0–1024). Default 1, which serves the next turn and a regenerate; editing the user message k-th from the end without reprocessing the whole conversation needs `k + 1`. Regenerates and edits restore a checkpoint only under a caller-managed string `kvCache` key. `0` disables them. Each checkpoint holds a copy of the recurrent or sliding-window state of its sequence in host RAM (on disk with `cache_checkpoint_storage: 'disk'`), up to hundreds of MiB on larger models, so memory grows with this value and with `parallel` unless `cache_checkpoints_max_bytes` caps it. Model fit checks do not count it. The newest one is also saved in the `cacheKey` file, so a conversation reloaded in a new process continues from it. Ignored by other models."
+    ),
+  cache_checkpoints_max_bytes: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe(
+      'Byte budget for the checkpoints kept per sequence; the oldest are dropped until the rest fit. `0` (default) is unlimited. The load fails when the budget cannot hold `cache_checkpoints` checkpoints of the largest size the context allows (on a sliding-window model, a full window).'
+    ),
+  cache_checkpoint_storage: z
+    .enum(['memory', 'disk'])
+    .optional()
+    .describe(
+      "Where checkpoints and the per-request rollback snapshot are kept: `'memory'` (default) in host RAM, `'disk'` in files under `cache_checkpoint_dir`, which it requires."
+    ),
+  cache_checkpoint_dir: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Writable directory for checkpoint files, required with `cache_checkpoint_storage: 'disk'` and rejected without it. The addon writes in a private directory it creates inside it (on Windows, in the directory itself). On mobile, pass the app's cache directory."
+    ),
+  cache_ram_mib: z
+    .number()
+    .int()
+    .min(0)
+    .max(1048576)
+    .optional()
+    .describe(
+      'Host-RAM budget, in MiB, for cached conversations that are not running (0–1048576). Default 0 (off). A conversation the model switches away from (another `kvCache` key, or a slot eviction with `parallel >= 2`) is kept in RAM, so returning to its caller-managed string `kvCache` key skips reading its `cacheKey` file. Model fit checks do not count this memory.'
+    ),
   'cache-type-k': z
     .string()
     .optional()
@@ -209,6 +260,33 @@ export const llmConfigBaseSchema = z.object({
     .describe(
       'Lower bound on the tokens one image may occupy. Vision models only. Unset uses the model default.'
     ),
+  'image-max-megapixels': z
+    .number()
+    .int()
+    .min(1)
+    .max(18_446_744_073_709)
+    .optional()
+    .describe(
+      'Largest image a vision model accepts, in millions of pixels (width × height). Checked against the image header before decoding; larger images are rejected. Vision models only. Default 50.'
+    ),
+  poll: z
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .optional()
+    .describe(
+      'CPU polling level, from 0 to 100. If omitted, uses the default native behavior. Higher values may reduce wake latency but consume more CPU during GPU work.'
+    ),
+  pollBatch: z
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .optional()
+    .describe(
+      'CPU polling level for batch processing, from 0 to 100. If omitted, uses the default native behavior.'
+    ),
   threads: z
     .number()
     .int()
@@ -221,19 +299,19 @@ export const llmConfigBaseSchema = z.object({
     .int()
     .optional()
     .describe(
-      'CPU threads to use during batch and prompt processing. Setting it governs generation too and discards `threads` and `cpu-mask`; leave it unset for `threads` to apply to both.'
+      'CPU threads to use during batch and prompt processing. Applies to steps processing several tokens, including parallel decoding and speculative verification. Single-sequence generation uses `threads`.'
     ),
   'cpu-mask': z
     .string()
     .optional()
     .describe(
-      "CPU affinity mask as an arbitrarily long hex string, e.g. `'ff'`. Unset applies no affinity. Ignored when `threads-batch` is set."
+      "CPU affinity mask as an arbitrarily long hex string, e.g. `'ff'`. Applies to generation. Unset applies no affinity."
     ),
   'cpu-mask-batch': z
     .string()
     .optional()
     .describe(
-      'CPU affinity mask for batch and prompt processing, in the same form as `cpu-mask`. Honoured only alongside `threads-batch`; without it `cpu-mask` takes over.'
+      'CPU affinity mask for batch and prompt processing, in the same form as `cpu-mask`. Unset inherits `cpu-mask` when the batch thread count is also unset.'
     ),
   'override-tensor': z
     .string()
@@ -348,6 +426,36 @@ export type LlmConfig = z.infer<typeof llmConfigSchema>
 
 // Base schema - validates types, all fields optional (for input validation)
 export const embedConfigBaseSchema = z.object({
+  poll: z
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .optional()
+    .describe(
+      'CPU polling level, from 0 to 100. If omitted, uses the default native behavior. Higher values may reduce wake latency but consume more CPU during GPU work.'
+    ),
+  pollBatch: z
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .optional()
+    .describe(
+      'CPU polling level for batch processing, from 0 to 100. If omitted, uses the default native behavior.'
+    ),
+  backend: z
+    .array(z.enum(['cuda', 'vulkan', 'metal', 'opencl', 'auto']))
+    .min(1)
+    .optional()
+    .describe(
+      "Ordered GPU backend names, such as ['cuda', 'vulkan']. " +
+        'Accepted names: cuda, vulkan, metal, opencl, and auto for no preference. ' +
+        'If unset, uses the native default order. ' +
+        'If none of the specified names has a corresponding available device, selection falls back to the native default order. ' +
+        "Use device: 'cpu' for CPU. " +
+        "A GPU override cannot be combined with splitMode: 'layer'."
+    ),
   gpuLayers: z
     .number()
     .int()
@@ -364,10 +472,10 @@ export const embedConfigBaseSchema = z.object({
     .optional()
     .describe('Tokens processed per batch (input throughput). Default 1024.'),
   pooling: z
-    .enum(['none', 'mean', 'cls', 'last', 'rank'])
+    .enum(['none', 'mean', 'cls', 'last'])
     .optional()
     .describe(
-      "Pooling strategy collapsing token embeddings into one sequence vector: `'none'`, `'mean'`, `'cls'`, `'last'`, or `'rank'`. Unset uses the model default."
+      "Pooling strategy collapsing token embeddings into one sequence vector: `'none'`, `'mean'`, `'cls'`, or `'last'`. Unset uses the model default."
     ),
   attention: z
     .enum(['causal', 'non-causal'])
